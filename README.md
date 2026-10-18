@@ -79,9 +79,9 @@ is_prime_v2(1000000000)
 
 ```
 ## System 
-Intel Core 7 240H
+**Intel Core 7 240H**
 -4.5Ghz, 6P + 4E cores, 16 threads
-32GB DDR5-5600
+**32GB DDR5-5600**
 -DRAM Freq 2793.2 MHz
 ---
 
