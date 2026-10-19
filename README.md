@@ -1,94 +1,66 @@
-# Ultra-Fast Sieve of Eratosthenes in Pure Python
+# Sieve of Eratosthenes in Python: bytearray vs Numba vs multiprocessing
 
-An aggressively optimized, single-threaded Sieve of Eratosthenes that finds all **50,847,534 prime numbers up to 1 Billion in just 3.46 seconds**. 
+Three implementations of an odd-only Sieve of Eratosthenes, benchmarked up to 1,000,000,000 (50,847,534 primes). Every version is verified against the known prime count, and every timing is split into phases so the comparison is fair.
 
-By orchestrating Python's internal C-engine to execute low-level memory operations, this pure-Python implementation outpaces both dedicated LLVM machine-code compilers (Numba) and multi-threaded architectures.
+## Results (N = 1,000,000,000)
 
----
+Median of 5 runs, seconds (best run in parentheses).
 
-## Performance Benchmarks (Up to 1,000,000,000)
+| Implementation | Sieve only | Extract primes | Sieve + extract |
+|---|---|---|---|
+| Pure Python `bytearray` (slice assignment, `compress` extraction) | 3.395 (3.266) | 5.291 (5.210) | 8.606 (8.593) |
+| Pure Python `bytearray`, original list comprehension | 3.395 (3.266) | 11.939 (11.738) | 15.274 (15.132) |
+| Numba `njit` (single thread) | 3.230 (2.936) | 0.502 (0.497) | 3.726 (3.433) |
+| Multiprocessing, segmented `bytearray` | 1.211 (1.184) | n/a | 1.540 (1.537) |
 
-| Implementation | Threads | Average Runtime | Engineering Mechanics |
-| :--- | :--- | :--- | :--- |
-| **Pure Python `bytearray` (This Repo)** | **1 (Single)** | **3.4677s** | **C-level block blitting & SIMD saturation** |
-| Multithreaded `bytearray` Chunks | Multiple | 3.7015s | L3 Cache contention & memory bus saturation |
-| Numba Machine Code (`njit`) | 1 (Single) | 4.0612s | Instruction latency & cache thrashing |
+- **Sieve only** builds the flag array (or counts primes, for the multiprocessing version).
+- **Extract primes** converts flags into the actual list of primes. The Python version returns a list of ints, the Numba and multiprocessing versions return a NumPy `int64` array.
+- **Multiprocessing** timings include process-pool startup and transferring results back to the parent. Extraction happens inside the workers, so only the sieve-only (count) and full times are reported.
 
----
+**System:** Intel Core 7 240H (6P + 4E cores, 16 threads), 32 GB DDR5-5600, Windows 11, Python 3.14.7, NumPy 2.5.4, Numba 0.68.0.
 
-## The Optimization Journey (How It Happened)
-
-This project was built iteratively by peeling back the layers of Python's memory architecture. Here is how the performance scaled during development at a baseline of `1,000,000`:
-
-1. **The Native List Approach (~0.0319s):** Moving to contiguous memory slots allowed Python to look up and mutate indices nearly instantly, resulting in an immediate **240% speed increase** over basic loop structures.
-2. **The `bytearray` Breakthrough (~0.000646s):** Dropping down to raw bytes bypassed Python object overhead entirely. This single modification resulted in a staggering **4,838% performance leap**.
-3. **The 1-Billion Scalability Wall:** Scaling to 1,000,000,000 uncovered deep architectural boundaries between compiled machine code and native Python built-ins.
-
----
-
-## Mechanical Engineering: Why Pure Python Wins
-
-Most developers assume a compiled binary or multi-core parallelism will always beat interpreted Python. This project proves that for **memory-bound problems**, physical hardware mechanics dictate the absolute ceiling.
-
-### 1. Block-Level Memory Blitting vs. Scalar Stepping
-Under the hood, Python’s C source code treats `bytearray` as a contiguous block of raw memory bytes. When performing an extended slice assignment like `numbers[start_idx : size : step] = b"\x00" * num_multiples`, Python hands this stride directly to the CPU as a highly optimized vector operation. 
-
-In contrast, traditional compiled loops (even in Numba) evaluate memory jumps instruction-by-instruction. At a scale of 1 billion elements, large prime strides cause the CPU cache to constantly clear and reload from main RAM (**Cache Thrashing**), stalling the pipeline. Because Numba evaluates these jumps one instruction at a time, it cannot outpace the low-level memory blitting built directly into Python's slice engine.
-
-### 2. Slicing at the Silicon Level
-Because the slice math dictates exactly how many bytes to write ahead of time, the operation runs at the absolute maximum hardware speed the system's RAM bus can sustain. Python completely bypasses its own interpreter loop during the core sieving phase.
-
-### 3. The Fallacy of Multi-Threading Memory-Bound Tasks
-The multi-threaded `bytearray` version clocked in slower (**3.7015s**) than the single-threaded baseline. Because the single-threaded implementation *already* completely saturates the physical hardware bandwidth of the RAM bus, adding more threads cannot grant more throughput. Instead, multiple cores introduce thread-coordination overhead and constantly invalidate each other's CPU L3 caches.
-
-### 4. Efficient Pointer Streaming
-At a 1-billion range, the final list contains roughly 50.8 million integer pointers (~400 MB). Because Python allocates this memory sequentially *after* the heavy sieve math is finished, modern CPU hardware prefetchers stream this linear allocation in less than half a second, neutralizing Numba's fixed-size array advantage.
-
----
-
-## Code Implementation
-
-```python
-def is_prime_v2(number: int):
-    start = time.perf_counter()
-    if number < 2:
-        return []
-    if number == 2:
-        return [2]
-    size = (number -1) // 2 + 1
-    numbers = bytearray(b"\x01") * size
-    numbers[0] = 0
-    limit = int(number ** 0.5)
-
-    for i in range(1, (limit -1) // 2 + 1):
-        if numbers[i]:
-            p = 2 * i + 1
-            start_idx = (p * p - 1) // 2
-            step = p
-            num_multiples = (size - 1 - start_idx) // step + 1
-            numbers[start_idx : size : step] = b"\x00" * num_multiples
-    stop = time.perf_counter()
-    e_time = stop - start
-
-    primes = [2] + [2 * i + 1 for i, is_prime_v2 in enumerate(numbers) if is_prime_v2]
-    print(f"It took {e_time:.6f} seconds to complete up to {number}.(original bytearray)")
-    print(f"{len(primes)} primes found")
-    return primes
-
-is_prime_v2(1000000000)
+Reproduce with:
 
 ```
----
+python sieve_bench.py                    # N = 1e9, 5 runs
+python sieve_bench.py --include-original # also time the original list comprehension
+```
 
+## What the benchmark shows
 
-## System 
-**Intel Core 7 240H**
--4.5Ghz, 6P + 4E cores, 16 threads
-**32GB DDR5-5600**
--DRAM Freq 2793.2 MHz
+- **The sieve phase is essentially tied between `bytearray` and Numba.** 3.40 s vs 3.23 s is a gap of about 5%, similar in size to the run-to-run variation. Both perform the same strided byte writes over a ~500 MB array.
+- **Extraction is where single-process versions differ.** Numba's count-then-fill loop takes 0.50 s. Building the list of 50.8 million Python ints takes 5.29 s with `itertools.compress`, about 10x slower, and 11.94 s with the original list comprehension, about 2.3x slower than `compress`.
+- **End to end, Numba is about 2.3x faster than the Python version** (3.73 s vs 8.61 s), and about 4.1x faster than the original code (15.27 s).
+- **The segmented multiprocessing version is the fastest overall at 1.54 s.** That is about 2.4x faster than Numba and about 5.6x faster than the `compress` version end to end. Its sieve phase (counting only) is about 2.7x faster than the single-process versions, using 16 hardware threads, so scaling is real but well short of linear. This benchmark does not isolate why.
+- **The original "3.46 s for all primes" figure** matches the sieve-only column (3.40 s here). It did not include building the list of primes.
 
+## How it works
 
----
+### Odd-only sieve
+Index `i` in the flag array represents the odd number `2*i + 1`, which halves memory (500 MB instead of 1 GB for N = 1e9). For each prime `p` up to sqrt(N), multiples starting at `p*p` are cleared with a stride of `p` in index space.
 
-## Key Takeaway
-**RAM Bandwidth is the Ultimate Bottleneck.** When an operation becomes entirely memory-bound rather than compute-bound, a highly optimized C-implemented built-in utilizing raw hardware blitting will always outperform a dedicated machine-code compiler executing scalar loops.
+### Why slice assignment is fast in pure Python
+`flags[start:size:p] = bytes(n)` runs as a single C loop inside CPython, so the interpreter is not involved per element. This is why the `bytearray` version is far faster than a Python `for` loop. It is a scalar strided write loop, one byte per step, not a SIMD or vectorized operation. Only contiguous (step 1) slices can use `memcpy`-style bulk copies.
+
+### Why Numba is in the same range for the sieve
+Numba compiles the inner `for idx in range(start, size, p)` loop to the same kind of strided byte stores. Both versions touch the whole 500 MB array once per small prime, so for large N both are limited by cache misses and memory access patterns rather than by instruction count. Differences between them come mostly from the extraction phase and from implementation details, not from "compiled vs built-in" as such.
+
+### Extraction
+- **Python:** `itertools.compress(range(1, 2*len(flags), 2), flags)` keeps the scan in C. The original `[2*i+1 for i, f in enumerate(flags) if f]` runs a Python-level loop over ~500 million entries and is much slower. Either way, the result is a list holding ~50.8 million separate int objects, which needs well over 1 GB of memory (the list's pointers alone are ~400 MB, and each int above 256 is its own ~28-byte object).
+- **Numba:** a counting pass followed by a fill pass writes directly into a single `int64` array (~400 MB).
+
+### Multiprocessing version
+This uses `ProcessPoolExecutor` (separate processes, not threads, so the GIL is not the limiting factor). The main process sieves the base primes up to sqrt(N), then each worker sieves one segment of 256 Ki odd numbers and returns its primes as a NumPy array. Segments are small enough to fit in L2 cache, which is the main reason a segmented sieve can beat a single large-array sieve.
+
+## Corrections to earlier versions of this README
+
+Earlier versions of this project made claims that were not supported by the measurements. They have been removed:
+
+- **Timing scope.** The original pure Python timer stopped before the list of primes was built, while the Numba timer included building the result. The two numbers were not comparable. All timings here report sieve and extraction separately.
+- **Extraction time.** "All primes in 3.46 s" described only the sieve phase. Building the 50.8M-element list is a separate cost and was not included.
+- **"SIMD saturation" / "block blitting".** Strided slice assignment is a scalar C loop, not a vector operation.
+- **"Python beats Numba."** The sieve loops are essentially equivalent. The earlier gap was explained by the Numba timer including extraction (plus extra temporary arrays in the old Numba code) and the Python timer not.
+- **"Multithreaded version loses due to L3 contention."** That version used processes, not threads, and the timer included result extraction and transfer. No cache-contention measurement was made.
+- **"RAM bandwidth is the ultimate bottleneck."** Not demonstrated. A flat sieve over a 500 MB array is largely limited by cache misses, and cache-blocked (segmented) sieves are generally much faster than this approach. Dedicated implementations such as `primesieve` sieve 1e9 far faster than any version here.
+- **"Prefetchers stream the list in under half a second."** Not supported; creating the list takes far longer than that.
+- **Sub-millisecond micro-benchmarks** (the 1,000,000 "percent speedup" figures) were dominated by timer noise and are no longer reported.
